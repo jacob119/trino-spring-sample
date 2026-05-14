@@ -5,6 +5,7 @@ import com.company.trino.exception.ImpersonationDeniedException;
 import com.company.trino.model.QueryRequest;
 import com.company.trino.model.QueryResult;
 import com.company.trino.pool.TrinoConnectionPool;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,8 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import javax.sql.DataSource;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.sql.*;
 
 import static org.assertj.core.api.Assertions.*;
@@ -56,7 +59,7 @@ class TrinoQueryServiceTest {
         when(statement.executeQuery(anyString())).thenReturn(resultSet);
         when(resultSet.getMetaData()).thenReturn(metaData);
 
-        service = new TrinoQueryService(connectionPool, props);
+        service = new TrinoQueryService(connectionPool, props, new ObjectMapper());
     }
 
     @Test
@@ -150,5 +153,54 @@ class TrinoQueryServiceTest {
         service.executeQuery("alice", new QueryRequest("SELECT 1", null));
 
         verify(statement).setMaxRows(1000);
+    }
+
+    @Test
+    @DisplayName("streamQuery NDJSON 형식으로 meta/row/done 라인 출력")
+    void streamQuery_validInput_writesNdjsonLines() throws Exception {
+        when(metaData.getColumnCount()).thenReturn(2);
+        when(metaData.getColumnName(1)).thenReturn("id");
+        when(metaData.getColumnName(2)).thenReturn("name");
+        when(resultSet.next()).thenReturn(true, false);
+        when(resultSet.getObject(1)).thenReturn(1L);
+        when(resultSet.getObject(2)).thenReturn("Alice");
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        service.streamQuery("alice", new QueryRequest("SELECT id, name FROM users", null), bos);
+
+        String[] lines = bos.toString(StandardCharsets.UTF_8).trim().split("\n");
+        assertThat(lines).hasSize(3);
+        assertThat(lines[0]).contains("\"type\":\"meta\"").contains("\"columns\"");
+        assertThat(lines[1]).contains("\"type\":\"row\"").contains("\"data\"");
+        assertThat(lines[2]).contains("\"type\":\"done\"").contains("\"rowCount\"");
+    }
+
+    @Test
+    @DisplayName("streamQuery — 빈 결과셋이면 meta + done만 출력")
+    void streamQuery_emptyResultSet_writesMetaAndDone() throws Exception {
+        when(metaData.getColumnCount()).thenReturn(1);
+        when(metaData.getColumnName(1)).thenReturn("col");
+        when(resultSet.next()).thenReturn(false);
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        service.streamQuery("alice", new QueryRequest("SELECT col FROM t", null), bos);
+
+        String[] lines = bos.toString(StandardCharsets.UTF_8).trim().split("\n");
+        assertThat(lines).hasSize(2);
+        assertThat(lines[0]).contains("\"type\":\"meta\"");
+        assertThat(lines[1]).contains("\"type\":\"done\"").contains("\"rowCount\":0");
+    }
+
+    @Test
+    @DisplayName("streamQuery — SQL 오류 시 error 라인 출력")
+    void streamQuery_sqlException_writesErrorLine() throws Exception {
+        when(statement.executeQuery(anyString()))
+                .thenThrow(new SQLException("Trino error"));
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        service.streamQuery("alice", new QueryRequest("SELECT bad", null), bos);
+
+        String output = bos.toString(StandardCharsets.UTF_8);
+        assertThat(output).contains("\"type\":\"error\"");
     }
 }

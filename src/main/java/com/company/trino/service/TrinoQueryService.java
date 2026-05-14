@@ -5,11 +5,14 @@ import com.company.trino.exception.ImpersonationDeniedException;
 import com.company.trino.model.QueryRequest;
 import com.company.trino.model.QueryResult;
 import com.company.trino.pool.TrinoConnectionPool;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,17 +44,22 @@ public class TrinoQueryService {
 
     private final TrinoConnectionPool connectionPool;
     private final TrinoProperties props;
+    private final ObjectMapper objectMapper;
 
-    public TrinoQueryService(TrinoConnectionPool connectionPool, TrinoProperties props) {
+    public TrinoQueryService(TrinoConnectionPool connectionPool,
+                              TrinoProperties props,
+                              ObjectMapper objectMapper) {
         this.connectionPool = connectionPool;
         this.props = props;
+        this.objectMapper = objectMapper;
     }
 
     /**
      * 지정된 sessionUser로 impersonation하여 SQL을 실행하고 결과를 반환한다.
+     * 전체 결과를 메모리에 담으므로 대용량 쿼리에는 streamQuery를 사용한다.
      *
      * @param sessionUser 실제 쿼리를 실행할 사용자 ID
-     * @param request     실행할 SQL과 최대 행 수
+     * @param request     실행할 SQL과 최대 행 수 (null이면 1000)
      * @throws IllegalArgumentException      sessionUser가 null이거나 비어있을 때
      * @throws ImpersonationDeniedException  allowedPattern에 맞지 않는 sessionUser일 때
      * @throws TrinoQueryException           Trino 연결 또는 쿼리 실패 시
@@ -92,6 +100,83 @@ public class TrinoQueryService {
             log.error("[Query] 실패: sessionUser={}", sessionUser, e);
             throw new TrinoQueryException("query execution failed", e);
         }
+    }
+
+    /**
+     * 결과를 NDJSON으로 스트리밍한다. 전체 결과를 메모리에 담지 않아 OOM 위험이 없다.
+     *
+     * 출력 형식 (각 줄은 JSON 오브젝트 + \n):
+     *   {"type":"meta","sessionUser":"alice","columns":["id","name"]}
+     *   {"type":"row","data":{"id":1,"name":"Alice"}}
+     *   ...
+     *   {"type":"done","rowCount":N,"elapsedMs":M}
+     *   또는 오류 시:
+     *   {"type":"error","message":"query execution failed"}
+     *
+     * 주의: 이 메서드가 호출되는 시점에 HTTP 헤더가 이미 커밋되었으므로,
+     * SQL 오류 발생 시 HTTP 상태 코드를 변경할 수 없다. 오류 내용은 NDJSON 라인으로 전달된다.
+     * 헤더 커밋 전에 validateSessionUser()를 컨트롤러에서 호출해 인증 오류는 사전 차단한다.
+     *
+     * @param sessionUser 실제 쿼리를 실행할 사용자 ID (컨트롤러에서 사전 검증됨)
+     * @param request     실행할 SQL과 최대 행 수 (null 또는 0이면 무제한)
+     * @param out         HTTP 응답 OutputStream
+     */
+    public void streamQuery(String sessionUser, QueryRequest request, OutputStream out)
+            throws IOException {
+        long start = System.currentTimeMillis();
+        DataSource ds = connectionPool.getDataSource(sessionUser);
+
+        log.debug("[Stream] 시작: sessionUser={}, sql={}", sessionUser, request.sql());
+
+        try (Connection conn = ds.getConnection();
+             Statement stmt = conn.createStatement()) {
+
+            int maxRows = request.maxRows() != null ? request.maxRows() : 0;
+            if (maxRows > 0) stmt.setMaxRows(maxRows);
+            stmt.setQueryTimeout(props.getPool().getQueryTimeout());
+
+            try (ResultSet rs = stmt.executeQuery(request.sql())) {
+                ResultSetMetaData meta = rs.getMetaData();
+                int colCount = meta.getColumnCount();
+                List<String> columns = extractColumns(meta, colCount);
+
+                writeLine(out, Map.of("type", "meta", "sessionUser", sessionUser, "columns", columns));
+
+                int rowCount = 0;
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>(colCount * 2);
+                    for (int i = 1; i <= colCount; i++) {
+                        row.put(columns.get(i - 1), extractValue(rs, i));
+                    }
+                    writeLine(out, Map.of("type", "row", "data", row));
+                    rowCount++;
+                }
+
+                long elapsed = System.currentTimeMillis() - start;
+                writeLine(out, Map.of("type", "done", "rowCount", rowCount, "elapsedMs", elapsed));
+                log.info("[Stream] 완료: sessionUser={}, rows={}, elapsed={}ms",
+                        sessionUser, rowCount, elapsed);
+            }
+
+        } catch (SQLException e) {
+            log.error("[Stream] 실패: sessionUser={}", sessionUser, e);
+            try {
+                writeLine(out, Map.of("type", "error", "message", "query execution failed"));
+            } catch (IOException ignore) {
+                // 클라이언트 연결 끊김
+            }
+        }
+    }
+
+    /**
+     * sessionUser에 대한 impersonation 허용 여부를 사전에 검증한다.
+     * 스트리밍/비동기 컨트롤러에서 HTTP 헤더 커밋 전에 호출해야 한다.
+     *
+     * @throws IllegalArgumentException     sessionUser가 null이거나 비어있을 때
+     * @throws ImpersonationDeniedException allowedPattern에 맞지 않을 때
+     */
+    public void validateSessionUser(String sessionUser) {
+        validateImpersonation(sessionUser);
     }
 
     /**
@@ -178,6 +263,12 @@ public class TrinoQueryService {
             return value.toString();
         }
         return value;
+    }
+
+    private void writeLine(OutputStream out, Object value) throws IOException {
+        out.write(objectMapper.writeValueAsBytes(value));
+        out.write('\n');
+        out.flush();
     }
 
     /**

@@ -40,6 +40,7 @@ public class TrinoProperties {
     private LdapConfig ldap = new LdapConfig();
     private ImpersonationConfig impersonation = new ImpersonationConfig();
     private PoolConfig pool = new PoolConfig();
+    private AsyncConfig async = new AsyncConfig();
 
     public String getHost() { return host; }
     public void setHost(String host) { this.host = host; }
@@ -57,6 +58,8 @@ public class TrinoProperties {
     public void setImpersonation(ImpersonationConfig impersonation) { this.impersonation = impersonation; }
     public PoolConfig getPool() { return pool; }
     public void setPool(PoolConfig pool) { this.pool = pool; }
+    public AsyncConfig getAsync() { return async; }
+    public void setAsync(AsyncConfig async) { this.async = async; }
 
     /**
      * Trino 인증 서비스 계정 설정.
@@ -129,6 +132,26 @@ public class TrinoProperties {
         public void setPoolIdleThreshold(long poolIdleThreshold) { this.poolIdleThreshold = poolIdleThreshold; }
         public int getQueryTimeout() { return queryTimeout; }
         public void setQueryTimeout(int queryTimeout) { this.queryTimeout = queryTimeout; }
+    }
+
+    /**
+     * 비동기 쿼리 실행 스레드 풀 및 잡 TTL 설정.
+     *
+     * workerThreads: 쿼리 실행 스레드 수 (코어 = 맥스)
+     * maxQueueSize:  대기 큐 최대 크기. 초과 시 CallerRunsPolicy로 제출 스레드가 직접 실행한다.
+     * resultTtlSeconds: 완료/실패 잡 결과를 보관할 최대 시간(초). 이후 GC.
+     */
+    public static class AsyncConfig {
+        private int workerThreads = 10;
+        private int maxQueueSize = 100;
+        private long resultTtlSeconds = 600;
+
+        public int getWorkerThreads() { return workerThreads; }
+        public void setWorkerThreads(int workerThreads) { this.workerThreads = workerThreads; }
+        public int getMaxQueueSize() { return maxQueueSize; }
+        public void setMaxQueueSize(int maxQueueSize) { this.maxQueueSize = maxQueueSize; }
+        public long getResultTtlSeconds() { return resultTtlSeconds; }
+        public void setResultTtlSeconds(long resultTtlSeconds) { this.resultTtlSeconds = resultTtlSeconds; }
     }
 
     /**

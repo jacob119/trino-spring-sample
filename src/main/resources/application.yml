@@ -1,6 +1,11 @@
 server:
   port: 8083
 
+spring:
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false  # ISO-8601 날짜 형식 사용
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Trino 연결 설정
 #
@@ -44,6 +49,12 @@ trino:
     pool-eviction-interval: 300 # 유휴 풀 정리 스케줄러 실행 주기 (초, 5분)
     pool-idle-threshold: 600    # 이 시간(초) 이상 미사용 풀은 자동 제거 (10분)
     query-timeout: 300          # 쿼리 최대 실행 시간 (초, 0=무제한)
+
+  # 비동기 쿼리 실행 설정 (POST /api/query/async)
+  async:
+    worker-threads: 10          # 백그라운드 쿼리 실행 스레드 수
+    max-queue-size: 100         # 대기 큐 최대 크기 (초과 시 HTTP 스레드가 직접 실행)
+    result-ttl-seconds: 600     # 완료/실패 잡 결과 보관 시간 (초, 10분)
 
 logging:
   level:
