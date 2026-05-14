@@ -1,0 +1,51 @@
+server:
+  port: 8083
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trino 연결 설정
+#
+# 운영 환경(LDAP + HTTPS) 전환 시 변경 사항:
+#   1. trino.host / port → 운영 Trino 주소로 변경
+#   2. trino.ssl: true 로 변경
+#   3. trino.ldap.user / password → 실제 LDAP 서비스 계정 정보 입력
+#      (password가 비어있으면 INSECURE 모드, 있으면 LDAP PASSWORD 모드로 동작)
+# ─────────────────────────────────────────────────────────────────────────────
+trino:
+  host: localhost
+  port: 8081        # Trino HTTP 포트 (HTTPS인 경우 443 또는 8443)
+  catalog: tpch     # 기본 카탈로그 (없으면 쿼리에서 직접 지정)
+  schema: tiny      # 기본 스키마
+  ssl: false        # 운영 환경에서는 true
+
+  # LDAP 서비스 계정 — Trino에 인증할 때 사용하는 시스템 계정
+  # INSECURE 모드 (로컬/개발): password를 비워두면 username만으로 연결된다.
+  # LDAP 모드 (운영): password에 실제 LDAP 비밀번호를 입력한다.
+  ldap:
+    user: admin
+    password:       # 운영 환경에서는 환경변수로 주입 (예: ${TRINO_SVC_PASSWORD})
+
+  # 애플리케이션 레벨 impersonation 보안 정책
+  # Trino rules.json이 최종 권한을 결정하며, 이 설정은 사전 필터 역할만 한다.
+  impersonation:
+    enabled: true
+    # 일반적인 AD 계정 형식: 영문자로 시작, 영숫자/점/하이픈/밑줄, 최대 64자
+    # 예) 전체 허용(개발 전용): ".*"
+    # 예) 도메인 접두사 제한: "^(dev|ops|data)-.*"
+    allowed-pattern: "^[a-zA-Z][a-zA-Z0-9._-]{0,63}$"
+
+  # 사용자별 HikariCP 커넥션 풀 설정
+  pool:
+    max-pool-size: 10           # 사용자당 최대 커넥션 수
+    min-idle: 1                 # 사용자당 최소 유지 커넥션 수
+    connection-timeout: 30000   # 커넥션 획득 대기 최대 시간 (ms)
+    idle-timeout: 300000        # 유휴 커넥션 반납 대기 시간 (ms, 5분)
+    max-lifetime: 1800000       # 커넥션 최대 수명 (ms, 30분)
+    max-user-pools: 50          # 동시에 유지할 최대 사용자 풀 수 (LRU 초과 시 제거)
+    pool-eviction-interval: 300 # 유휴 풀 정리 스케줄러 실행 주기 (초, 5분)
+    pool-idle-threshold: 600    # 이 시간(초) 이상 미사용 풀은 자동 제거 (10분)
+    query-timeout: 300          # 쿼리 최대 실행 시간 (초, 0=무제한)
+
+logging:
+  level:
+    com.company.trino: DEBUG   # 쿼리/풀 상세 로그 (운영에서는 INFO로 변경)
+    com.zaxxer.hikari: INFO

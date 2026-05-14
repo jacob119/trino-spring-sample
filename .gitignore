@@ -1,0 +1,22 @@
+# Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Spring Boot
+*.log
+spring-application.log
+
+# 환경별 설정 (로컬 오버라이드용 — Git에 올리지 않음)
+application-local.yml
+application-secret.yml
